@@ -157,12 +157,20 @@ def run_pipeline():
     try:
         print("\n[INFO] PIPELINE STARTED\n")
         BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+        print(f"[DEBUG] BASE_DIR: {BASE_DIR}")
+        print(f"[DEBUG] Working directory: {os.getcwd()}")
         
         PATENT_FILE = os.path.join(BASE_DIR, "g_patent.tsv")
         ABSTRACT_FILE = os.path.join(BASE_DIR, "g_patent_abstract.tsv")
         INVENTOR_FILE = os.path.join(BASE_DIR, "g_inventor_disambiguated.tsv")
         REL_FILE = os.path.join(BASE_DIR, "g_persistent_inventor.tsv")
         ASSIGNEE_FILE = os.path.join(BASE_DIR, "g_assignee_disambiguated.tsv")
+        
+        print(f"[DEBUG] PATENT_FILE exists: {os.path.exists(PATENT_FILE)}")
+        print(f"[DEBUG] ABSTRACT_FILE exists: {os.path.exists(ABSTRACT_FILE)}")
+        print(f"[DEBUG] INVENTOR_FILE exists: {os.path.exists(INVENTOR_FILE)}")
+        print(f"[DEBUG] REL_FILE exists: {os.path.exists(REL_FILE)}")
+        print(f"[DEBUG] ASSIGNEE_FILE exists: {os.path.exists(ASSIGNEE_FILE)}")
         
         # We will process chunks
         batch_size = 1000
