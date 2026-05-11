@@ -207,25 +207,37 @@ def run_pipeline():
                 clean_inventors_all = []
                 for chunk in pd.read_csv(INVENTOR_FILE, sep="\t", chunksize=batch_size, nrows=50000):
                     chunk["name"] = (chunk["disambig_inventor_name_first"].fillna("") + " " + chunk["disambig_inventor_name_last"].fillna("")).str.strip().replace("", "Unknown")
-                    chunk["country"] = chunk.get("inventor_country", "Unknown")
+                    chunk["country"] = "Unknown"  # location_id exists but country name not available, use default
                     chunk = chunk[["inventor_id", "name", "country"]].drop_duplicates()
                     clean_inventors_all.append(chunk)
                     inv_data = prepare_batch_data(chunk, ["inventor_id", "name", "country"])
                     cursor.executemany("INSERT OR REPLACE INTO inventors VALUES (?, ?, ?)", inv_data)
                     total_inventors += len(inv_data)
                 conn.commit()
-                pd.concat(clean_inventors_all).to_csv(os.path.join(BASE_DIR, "..", "clean_inventors.csv"), index=False)
+                if clean_inventors_all:
+                    pd.concat(clean_inventors_all).to_csv(os.path.join(BASE_DIR, "..", "clean_inventors.csv"), index=False)
             
             # 3. Companies (Assignees)
             total_companies = 0
             if os.path.exists(ASSIGNEE_FILE):
                 clean_companies_all = []
                 for chunk in pd.read_csv(ASSIGNEE_FILE, sep="\t", chunksize=batch_size, nrows=50000):
-                    if "assignee_id" not in chunk.columns: continue
-                    chunk["name"] = chunk.get("disambig_assignee_organization", pd.Series([None]*len(chunk))).fillna(
-                        chunk.get("disambig_assignee_individual_name_first", pd.Series([""]*len(chunk))) + " " + 
-                        chunk.get("disambig_assignee_individual_name_last", pd.Series([""]*len(chunk)))
-                    ).str.strip().replace("", "Unknown Company")
+                    if "assignee_id" not in chunk.columns: 
+                        continue
+                    # Try organization name first, fallback to individual name
+                    if "disambig_assignee_organization" in chunk.columns:
+                        chunk["name"] = chunk["disambig_assignee_organization"].fillna("")
+                    else:
+                        chunk["name"] = ""
+                    
+                    # If org name is empty, combine first and last name
+                    empty_mask = chunk["name"].isna() | (chunk["name"] == "")
+                    if empty_mask.any() and "disambig_assignee_individual_name_first" in chunk.columns:
+                        first = chunk.loc[empty_mask, "disambig_assignee_individual_name_first"].fillna("")
+                        last = chunk.loc[empty_mask, "disambig_assignee_individual_name_last"].fillna("")
+                        chunk.loc[empty_mask, "name"] = (first + " " + last).str.strip()
+                    
+                    chunk["name"] = chunk["name"].str.strip().replace("", "Unknown Company")
                     chunk = chunk[["assignee_id", "name"]].drop_duplicates()
                     chunk.rename(columns={"assignee_id": "company_id"}, inplace=True)
                     clean_companies_all.append(chunk)
@@ -240,8 +252,11 @@ def run_pipeline():
             total_relationships = 0
             if os.path.exists(REL_FILE):
                 sample_rel = pd.read_csv(REL_FILE, sep="\t", nrows=5)
-                inventor_col = next((c for c in sample_rel.columns if "disamb_inventor_id" in c), None)
+                # Find the most recent inventor ID column (highest date)
+                inventor_cols = [c for c in sample_rel.columns if "disamb_inventor_id" in c]
+                inventor_col = sorted(inventor_cols)[-1] if inventor_cols else None
                 if inventor_col:
+                    print(f"[INFO] Using inventor column: {inventor_col}")
                     for chunk in pd.read_csv(REL_FILE, sep="\t", chunksize=batch_size, nrows=50000):
                         rel = chunk[["patent_id", inventor_col]].dropna()
                         rel_data = [(r[0], r[1], None) for r in rel.itertuples(index=False, name=None)]
