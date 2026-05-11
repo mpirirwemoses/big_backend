@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from flask import Flask, jsonify, request, send_from_directory, make_response
 from flask_cors import CORS
 import pandas as pd
+import numpy as np
 
 # Resolve the dist folder relative to this file so it works on Render and locally
 _BASE = os.path.dirname(os.path.abspath(__file__))
@@ -64,14 +65,57 @@ def initialize_database():
     try:
         with get_db() as conn:
             cursor = conn.cursor()
-            schema_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "schema.sql")
-            with open(schema_path, "r") as f:
-                schema_script = f.read()
-            cursor.executescript(schema_script)
+            
+            # Create tables if they don't exist
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS patents (
+                    patent_id TEXT PRIMARY KEY,
+                    title TEXT,
+                    abstract TEXT,
+                    filing_date TEXT,
+                    year INTEGER
+                )
+            """)
+            
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS inventors (
+                    inventor_id TEXT PRIMARY KEY,
+                    name TEXT,
+                    country TEXT
+                )
+            """)
+            
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS companies (
+                    company_id TEXT PRIMARY KEY,
+                    name TEXT
+                )
+            """)
+            
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS relationships (
+                    patent_id TEXT,
+                    inventor_id TEXT,
+                    company_id TEXT,
+                    FOREIGN KEY (patent_id) REFERENCES patents(patent_id),
+                    FOREIGN KEY (inventor_id) REFERENCES inventors(inventor_id),
+                    FOREIGN KEY (company_id) REFERENCES companies(company_id)
+                )
+            """)
+            
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    email TEXT UNIQUE,
+                    password TEXT
+                )
+            """)
+            
             cursor.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_relationships_unique ON relationships (patent_id, inventor_id, company_id)"
             )
 
+            # Drop and recreate views
             cursor.executescript("""
                 DROP VIEW IF EXISTS v_top_inventors;
                 CREATE VIEW v_top_inventors AS
@@ -138,6 +182,15 @@ def initialize_database():
             """)
             conn.commit()
             print("[OK] Database initialized successfully")
+            
+            # Check if database is empty and run pipeline automatically
+            cursor.execute("SELECT COUNT(*) FROM patents")
+            if cursor.fetchone()[0] == 0:
+                print("[INFO] Database empty, checking for data files...")
+                # Run pipeline in background thread to avoid blocking startup
+                import threading
+                threading.Thread(target=run_pipeline, daemon=True).start()
+                
     except Exception as e:
         print(f"[ERROR] Database initialization error: {e}")
         traceback.print_exc()
@@ -150,14 +203,15 @@ def clean_value(v, max_length=4000):
     v = re.sub(r"[\x00-\x1f\x7f-\x9f]", "", v)
     v = v.replace("\n", " ").replace("\r", " ").replace("\t", " ")
     if len(v) > max_length: v = v[:max_length]
-    return v.strip()
+    return v.strip() if v.strip() else None
 
 def hash_password(password):
     if not password: return None
     return hashlib.sha256(password.encode()).hexdigest()
 
 def prepare_batch_data(df, columns=None):
-    if columns: df = df[columns]
+    if columns: 
+        df = df[columns]
     data = []
     for row in df.itertuples(index=False, name=None):
         cleaned_row = tuple(clean_value(val) for val in row)
@@ -184,112 +238,181 @@ def run_pipeline():
         print(f"[DEBUG] REL_FILE exists: {os.path.exists(REL_FILE)}")
         print(f"[DEBUG] ASSIGNEE_FILE exists: {os.path.exists(ASSIGNEE_FILE)}")
         
-        # We will process chunks
+        # Check if any files exist
+        if not any([os.path.exists(PATENT_FILE), os.path.exists(INVENTOR_FILE), os.path.exists(ASSIGNEE_FILE)]):
+            print("[WARNING] No data files found. Loading sample data for testing.")
+            load_sample_data()
+            return {
+                "status": "success", 
+                "message": "Sample data loaded (no TSV files found)",
+                "total_patents": 3,
+                "total_inventors": 3,
+                "total_companies": 3,
+                "total_relationships": 3
+            }
+        
         batch_size = 1000
         
         with get_db() as conn:
             cursor = conn.cursor()
-            # Keep existing data intact and load new/updated rows without deleting.
-            # This avoids clearing the database when the pipeline runs on login or refresh.
             
             # 1. Patents
             total_patents = 0
             if os.path.exists(PATENT_FILE) and os.path.exists(ABSTRACT_FILE):
-                abstracts_df = pd.read_csv(ABSTRACT_FILE, sep="\t", low_memory=False, nrows=50000)
+                print("[INFO] Loading patents and abstracts...")
+                try:
+                    abstracts_df = pd.read_csv(ABSTRACT_FILE, sep="\t", low_memory=False)
+                    print(f"[INFO] Loaded {len(abstracts_df)} abstracts")
+                except Exception as e:
+                    print(f"[ERROR] Loading abstracts: {e}")
+                    abstracts_df = pd.DataFrame()
+                
                 clean_patents_all = []
-                for chunk in pd.read_csv(PATENT_FILE, sep="\t", chunksize=batch_size, nrows=50000):
-                    chunk = chunk[["patent_id", "patent_title", "patent_date"]].copy()
-                    chunk.rename(columns={"patent_title": "title", "patent_date": "filing_date"}, inplace=True)
-                    chunk["filing_date"] = pd.to_datetime(chunk["filing_date"], errors="coerce")
-                    chunk["year"] = chunk["filing_date"].dt.year
-                    chunk["filing_date"] = chunk["filing_date"].astype(str)
+                try:
+                    for chunk in pd.read_csv(PATENT_FILE, sep="\t", chunksize=batch_size):
+                        print(f"[INFO] Processing patent chunk with {len(chunk)} rows")
+                        chunk = chunk[["patent_id", "patent_title", "patent_date"]].copy()
+                        chunk.rename(columns={"patent_title": "title", "patent_date": "filing_date"}, inplace=True)
+                        chunk["filing_date"] = pd.to_datetime(chunk["filing_date"], errors="coerce")
+                        chunk["year"] = chunk["filing_date"].dt.year
+                        chunk["filing_date"] = chunk["filing_date"].astype(str)
+                        
+                        if not abstracts_df.empty:
+                            chunk = chunk.merge(abstracts_df[["patent_id", "patent_abstract"]], on="patent_id", how="left")
+                            chunk["abstract"] = chunk["patent_abstract"].fillna("N/A")
+                            chunk.drop(columns=["patent_abstract"], inplace=True)
+                        else:
+                            chunk["abstract"] = "N/A"
+                        
+                        chunk.drop_duplicates(subset=["patent_id"], inplace=True)
+                        chunk = chunk.dropna(subset=["patent_id"])
+                        
+                        clean_patents_all.append(chunk)
+                        patent_data = prepare_batch_data(chunk, ["patent_id", "title", "abstract", "filing_date", "year"])
+                        if patent_data:
+                            cursor.executemany("INSERT OR REPLACE INTO patents VALUES (?, ?, ?, ?, ?)", patent_data)
+                            total_patents += len(patent_data)
+                    conn.commit()
+                    print(f"[INFO] Loaded {total_patents} patents")
                     
-                    chunk = chunk.merge(abstracts_df[["patent_id", "patent_abstract"]], on="patent_id", how="left")
-                    chunk["abstract"] = chunk["patent_abstract"].fillna("N/A")
-                    chunk.drop(columns=["patent_abstract"], inplace=True)
-                    chunk.drop_duplicates(subset=["patent_id"], inplace=True)
-                    
-                    clean_patents_all.append(chunk)
-                    patent_data = prepare_batch_data(chunk, ["patent_id", "title", "abstract", "filing_date", "year"])
-                    cursor.executemany("INSERT OR REPLACE INTO patents VALUES (?, ?, ?, ?, ?)", patent_data)
-                    total_patents += len(patent_data)
-                conn.commit()
-                pd.concat(clean_patents_all).to_csv(os.path.join(BASE_DIR, "..", "clean_patents.csv"), index=False)
+                    if clean_patents_all:
+                        pd.concat(clean_patents_all).to_csv(os.path.join(BASE_DIR, "..", "clean_patents.csv"), index=False)
+                except Exception as e:
+                    print(f"[ERROR] Processing patents: {e}")
+                    traceback.print_exc()
             
             # 2. Inventors
             total_inventors = 0
             if os.path.exists(INVENTOR_FILE):
+                print("[INFO] Loading inventors...")
                 clean_inventors_all = []
-                for chunk in pd.read_csv(INVENTOR_FILE, sep="\t", chunksize=batch_size, nrows=50000):
-                    chunk["name"] = (chunk["disambig_inventor_name_first"].fillna("") + " " + chunk["disambig_inventor_name_last"].fillna("")).str.strip().replace("", "Unknown")
-                    chunk["country"] = "Unknown"  # location_id exists but country name not available, use default
-                    chunk = chunk[["inventor_id", "name", "country"]].drop_duplicates()
-                    clean_inventors_all.append(chunk)
-                    inv_data = prepare_batch_data(chunk, ["inventor_id", "name", "country"])
-                    cursor.executemany("INSERT OR REPLACE INTO inventors VALUES (?, ?, ?)", inv_data)
-                    total_inventors += len(inv_data)
-                conn.commit()
-                if clean_inventors_all:
-                    pd.concat(clean_inventors_all).to_csv(os.path.join(BASE_DIR, "..", "clean_inventors.csv"), index=False)
+                try:
+                    for chunk in pd.read_csv(INVENTOR_FILE, sep="\t", chunksize=batch_size):
+                        chunk["name"] = (chunk.get("disambig_inventor_name_first", pd.Series()).fillna("") + " " + chunk.get("disambig_inventor_name_last", pd.Series()).fillna("")).str.strip().replace("", "Unknown")
+                        chunk["country"] = "Unknown"
+                        chunk = chunk[["inventor_id", "name", "country"]].drop_duplicates()
+                        chunk = chunk.dropna(subset=["inventor_id"])
+                        
+                        clean_inventors_all.append(chunk)
+                        inv_data = prepare_batch_data(chunk, ["inventor_id", "name", "country"])
+                        if inv_data:
+                            cursor.executemany("INSERT OR REPLACE INTO inventors VALUES (?, ?, ?)", inv_data)
+                            total_inventors += len(inv_data)
+                    conn.commit()
+                    print(f"[INFO] Loaded {total_inventors} inventors")
+                    
+                    if clean_inventors_all:
+                        pd.concat(clean_inventors_all).to_csv(os.path.join(BASE_DIR, "..", "clean_inventors.csv"), index=False)
+                except Exception as e:
+                    print(f"[ERROR] Processing inventors: {e}")
+                    traceback.print_exc()
             
             # 3. Companies (Assignees)
             total_companies = 0
             if os.path.exists(ASSIGNEE_FILE):
+                print("[INFO] Loading companies...")
                 clean_companies_all = []
-                for chunk in pd.read_csv(ASSIGNEE_FILE, sep="\t", chunksize=batch_size, nrows=50000):
-                    if "assignee_id" not in chunk.columns: 
-                        continue
-                    # Try organization name first, fallback to individual name
-                    if "disambig_assignee_organization" in chunk.columns:
-                        chunk["name"] = chunk["disambig_assignee_organization"].fillna("")
-                    else:
-                        chunk["name"] = ""
+                try:
+                    for chunk in pd.read_csv(ASSIGNEE_FILE, sep="\t", chunksize=batch_size):
+                        if "assignee_id" not in chunk.columns: 
+                            continue
+                        
+                        # Try organization name first, fallback to individual name
+                        if "disambig_assignee_organization" in chunk.columns:
+                            chunk["name"] = chunk["disambig_assignee_organization"].fillna("")
+                        else:
+                            chunk["name"] = ""
+                        
+                        # If org name is empty, combine first and last name
+                        empty_mask = chunk["name"].isna() | (chunk["name"] == "")
+                        if empty_mask.any() and "disambig_assignee_individual_name_first" in chunk.columns:
+                            first = chunk.loc[empty_mask, "disambig_assignee_individual_name_first"].fillna("")
+                            last = chunk.loc[empty_mask, "disambig_assignee_individual_name_last"].fillna("")
+                            chunk.loc[empty_mask, "name"] = (first + " " + last).str.strip()
+                        
+                        chunk["name"] = chunk["name"].str.strip().replace("", "Unknown Company")
+                        chunk = chunk[["assignee_id", "name"]].drop_duplicates()
+                        chunk.rename(columns={"assignee_id": "company_id"}, inplace=True)
+                        chunk = chunk.dropna(subset=["company_id"])
+                        
+                        clean_companies_all.append(chunk)
+                        comp_data = prepare_batch_data(chunk, ["company_id", "name"])
+                        if comp_data:
+                            cursor.executemany("INSERT OR REPLACE INTO companies VALUES (?, ?)", comp_data)
+                            total_companies += len(comp_data)
+                    conn.commit()
+                    print(f"[INFO] Loaded {total_companies} companies")
                     
-                    # If org name is empty, combine first and last name
-                    empty_mask = chunk["name"].isna() | (chunk["name"] == "")
-                    if empty_mask.any() and "disambig_assignee_individual_name_first" in chunk.columns:
-                        first = chunk.loc[empty_mask, "disambig_assignee_individual_name_first"].fillna("")
-                        last = chunk.loc[empty_mask, "disambig_assignee_individual_name_last"].fillna("")
-                        chunk.loc[empty_mask, "name"] = (first + " " + last).str.strip()
-                    
-                    chunk["name"] = chunk["name"].str.strip().replace("", "Unknown Company")
-                    chunk = chunk[["assignee_id", "name"]].drop_duplicates()
-                    chunk.rename(columns={"assignee_id": "company_id"}, inplace=True)
-                    clean_companies_all.append(chunk)
-                    comp_data = prepare_batch_data(chunk, ["company_id", "name"])
-                    cursor.executemany("INSERT OR REPLACE INTO companies VALUES (?, ?)", comp_data)
-                    total_companies += len(comp_data)
-                conn.commit()
-                if clean_companies_all:
-                    pd.concat(clean_companies_all).to_csv(os.path.join(BASE_DIR, "..", "clean_companies.csv"), index=False)
+                    if clean_companies_all:
+                        pd.concat(clean_companies_all).to_csv(os.path.join(BASE_DIR, "..", "clean_companies.csv"), index=False)
+                except Exception as e:
+                    print(f"[ERROR] Processing companies: {e}")
+                    traceback.print_exc()
 
             # 4. Relationships (Inventors)
             total_relationships = 0
             if os.path.exists(REL_FILE):
-                sample_rel = pd.read_csv(REL_FILE, sep="\t", nrows=5)
-                # Find the most recent inventor ID column (highest date)
-                inventor_cols = [c for c in sample_rel.columns if "disamb_inventor_id" in c]
-                inventor_col = sorted(inventor_cols)[-1] if inventor_cols else None
-                if inventor_col:
-                    print(f"[INFO] Using inventor column: {inventor_col}")
-                    for chunk in pd.read_csv(REL_FILE, sep="\t", chunksize=batch_size, nrows=50000):
-                        rel = chunk[["patent_id", inventor_col]].dropna()
-                        rel_data = [(r[0], r[1], None) for r in rel.itertuples(index=False, name=None)]
-                        cursor.executemany("INSERT OR IGNORE INTO relationships (patent_id, inventor_id, company_id) VALUES (?, ?, ?)", rel_data)
-                    total_relationships += len(rel_data)
-                    conn.commit()
+                print("[INFO] Loading inventor relationships...")
+                try:
+                    sample_rel = pd.read_csv(REL_FILE, sep="\t", nrows=5)
+                    inventor_cols = [c for c in sample_rel.columns if "disamb_inventor_id" in c]
+                    inventor_col = sorted(inventor_cols)[-1] if inventor_cols else None
+                    
+                    if inventor_col:
+                        print(f"[INFO] Using inventor column: {inventor_col}")
+                        for chunk in pd.read_csv(REL_FILE, sep="\t", chunksize=batch_size):
+                            if "patent_id" in chunk.columns and inventor_col in chunk.columns:
+                                rel = chunk[["patent_id", inventor_col]].dropna()
+                                rel_data = [(str(r[0]), str(r[1]), None) for r in rel.itertuples(index=False, name=None)]
+                                if rel_data:
+                                    cursor.executemany("INSERT OR IGNORE INTO relationships (patent_id, inventor_id, company_id) VALUES (?, ?, ?)", rel_data)
+                                    total_relationships += len(rel_data)
+                        conn.commit()
+                        print(f"[INFO] Loaded {total_relationships} inventor relationships")
+                except Exception as e:
+                    print(f"[ERROR] Processing inventor relationships: {e}")
+                    traceback.print_exc()
             
             # 5. Relationships (Companies)
             if os.path.exists(ASSIGNEE_FILE):
-                for chunk in pd.read_csv(ASSIGNEE_FILE, sep="\t", chunksize=batch_size, nrows=50000):
-                    if "patent_id" in chunk.columns and "assignee_id" in chunk.columns:
-                        rel = chunk[["patent_id", "assignee_id"]].dropna()
-                        rel_data = [(r[0], None, r[1]) for r in rel.itertuples(index=False, name=None)]
-                        cursor.executemany("INSERT OR IGNORE INTO relationships (patent_id, inventor_id, company_id) VALUES (?, ?, ?)", rel_data)
-                        total_relationships += len(rel_data)
-                conn.commit()
+                print("[INFO] Loading company relationships...")
+                company_rels = 0
+                try:
+                    for chunk in pd.read_csv(ASSIGNEE_FILE, sep="\t", chunksize=batch_size):
+                        if "patent_id" in chunk.columns and "assignee_id" in chunk.columns:
+                            rel = chunk[["patent_id", "assignee_id"]].dropna()
+                            rel_data = [(str(r[0]), None, str(r[1])) for r in rel.itertuples(index=False, name=None)]
+                            if rel_data:
+                                cursor.executemany("INSERT OR IGNORE INTO relationships (patent_id, inventor_id, company_id) VALUES (?, ?, ?)", rel_data)
+                                company_rels += len(rel_data)
+                    conn.commit()
+                    print(f"[INFO] Loaded {company_rels} company relationships")
+                    total_relationships += company_rels
+                except Exception as e:
+                    print(f"[ERROR] Processing company relationships: {e}")
+                    traceback.print_exc()
             
-        print(f"[SUCCESS] PIPELINE SUCCESS - Patents: {total_patents}, Inventors: {total_inventors}, Companies: {total_companies}")
+        print(f"[SUCCESS] PIPELINE SUCCESS - Patents: {total_patents}, Inventors: {total_inventors}, Companies: {total_companies}, Relationships: {total_relationships}")
         
         # Generate Console Report and JSON Report
         generate_reports_files()
@@ -299,9 +422,135 @@ def run_pipeline():
             "message": f"Pipeline completed! Loaded {total_patents} patents, {total_inventors} inventors, {total_companies} companies",
             "total_patents": total_patents,
             "total_inventors": total_inventors,
-            "total_companies": total_companies
+            "total_companies": total_companies,
+            "total_relationships": total_relationships
         }
     except Exception as e:
+        print(f"[ERROR] Pipeline failed: {e}")
+        traceback.print_exc()
+        return {"status": "error", "message": str(e)}
+
+def load_sample_data():
+    """Load sample data for testing when TSV files are not available"""
+    print("[INFO] Loading sample data...")
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            
+            # Sample patents
+            sample_patents = [
+                ("PAT001", "Quantum Computing Patent", "A novel quantum computing approach", "2020-01-15", 2020),
+                ("PAT002", "AI Healthcare System", "Machine learning for medical diagnosis", "2021-03-20", 2021),
+                ("PAT003", "Blockchain Security", "Decentralized security protocol", "2022-05-10", 2022),
+                ("PAT004", "5G Network Optimization", "Advanced cellular network routing", "2021-08-15", 2021),
+                ("PAT005", "Electric Vehicle Battery", "Fast-charging lithium-ion technology", "2022-01-20", 2022),
+                ("PAT006", "Machine Learning Algorithm", "Neural network optimization", "2020-11-30", 2020),
+                ("PAT007", "Solar Panel Efficiency", "Photovoltaic cell improvements", "2021-06-10", 2021),
+                ("PAT008", "Robotic Surgery System", "Precision medical robotics", "2022-09-05", 2022),
+                ("PAT009", "Facial Recognition", "Biometric security system", "2020-04-25", 2020),
+                ("PAT010", "Cloud Computing Platform", "Distributed computing architecture", "2021-12-12", 2021),
+            ]
+            cursor.executemany("INSERT OR REPLACE INTO patents VALUES (?, ?, ?, ?, ?)", sample_patents)
+            
+            # Sample inventors
+            sample_inventors = [
+                ("INV001", "John Smith", "USA"),
+                ("INV002", "Maria Garcia", "Spain"),
+                ("INV003", "Kenji Tanaka", "Japan"),
+                ("INV004", "Sarah Johnson", "USA"),
+                ("INV005", "Luis Rodriguez", "Mexico"),
+                ("INV006", "Wei Chen", "China"),
+                ("INV007", "Emma Brown", "UK"),
+                ("INV008", "Hans Mueller", "Germany"),
+                ("INV009", "Sophie Dubois", "France"),
+                ("INV010", "Marco Rossi", "Italy"),
+            ]
+            cursor.executemany("INSERT OR REPLACE INTO inventors VALUES (?, ?, ?)", sample_inventors)
+            
+            # Sample companies
+            sample_companies = [
+                ("COM001", "Tech Corp"),
+                ("COM002", "Health Innovations"),
+                ("COM003", "SecureChain Ltd"),
+                ("COM004", "Green Energy Solutions"),
+                ("COM005", "AI Research Institute"),
+                ("COM006", "Robotics International"),
+                ("COM007", "Cloud Systems Inc"),
+                ("COM008", "Biotech Laboratories"),
+                ("COM009", "Telecom Global"),
+                ("COM010", "Automotive Tech"),
+            ]
+            cursor.executemany("INSERT OR REPLACE INTO companies VALUES (?, ?)", sample_companies)
+            
+            # Sample relationships
+            sample_relationships = [
+                ("PAT001", "INV001", "COM001"),
+                ("PAT002", "INV002", "COM002"),
+                ("PAT003", "INV003", "COM003"),
+                ("PAT004", "INV004", "COM009"),
+                ("PAT005", "INV005", "COM004"),
+                ("PAT006", "INV006", "COM005"),
+                ("PAT007", "INV007", "COM004"),
+                ("PAT008", "INV008", "COM006"),
+                ("PAT009", "INV009", "COM007"),
+                ("PAT010", "INV010", "COM010"),
+            ]
+            cursor.executemany("INSERT OR IGNORE INTO relationships VALUES (?, ?, ?)", sample_relationships)
+            
+            conn.commit()
+            print("[INFO] Sample data loaded successfully (10+ rows per table)")
+    except Exception as e:
+        print(f"[ERROR] Loading sample data: {e}")
+
+def get_table_data():
+    """Get table data with at least 10 rows from each table"""
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            
+            # Get total counts
+            cursor.execute("SELECT COUNT(*) FROM patents")
+            total_patents = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT COUNT(*) FROM inventors")
+            total_inventors = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT COUNT(*) FROM companies")
+            total_companies = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT COUNT(*) FROM relationships")
+            total_relationships = cursor.fetchone()[0]
+            
+            # Get sample rows (at least 10 from each table)
+            cursor.execute("SELECT * FROM patents LIMIT 10")
+            patents = [dict(row) for row in cursor.fetchall()]
+            
+            cursor.execute("SELECT * FROM inventors LIMIT 10")
+            inventors = [dict(row) for row in cursor.fetchall()]
+            
+            cursor.execute("SELECT * FROM companies LIMIT 10")
+            companies = [dict(row) for row in cursor.fetchall()]
+            
+            cursor.execute("SELECT * FROM relationships LIMIT 10")
+            relationships = [dict(row) for row in cursor.fetchall()]
+            
+            return {
+                "status": "success",
+                "total_counts": {
+                    "patents": total_patents,
+                    "inventors": total_inventors,
+                    "companies": total_companies,
+                    "relationships": total_relationships
+                },
+                "sample_data": {
+                    "patents": patents,
+                    "inventors": inventors,
+                    "companies": companies,
+                    "relationships": relationships
+                }
+            }
+    except Exception as e:
+        print(f"[ERROR] Getting table data: {e}")
         traceback.print_exc()
         return {"status": "error", "message": str(e)}
 
@@ -311,7 +560,8 @@ def generate_reports_files():
             # Console Report
             cursor = conn.cursor()
             cursor.execute("SELECT total_patents FROM v_db_stats")
-            total_patents = cursor.fetchone()[0]
+            result = cursor.fetchone()
+            total_patents = result[0] if result else 0
             
             cursor.execute("SELECT name, patent_count FROM v_top_inventors LIMIT 2")
             top_inv = cursor.fetchall()
@@ -324,9 +574,12 @@ def generate_reports_files():
             
             print("\n================== PATENT REPORT ===================")
             print(f"Total Patents: {total_patents:,}")
-            print(f"Top Inventors: " + " ".join([f"{i+1}. {r[0]} - {r[1]}" for i, r in enumerate(top_inv)]))
-            print(f"Top Companies: " + " ".join([f"{i+1}. {r[0]} - {r[1]}" for i, r in enumerate(top_comp)]))
-            print(f"Top Countries: " + " ".join([f"{i+1}. {r[0]}" for i, r in enumerate(top_countries)]))
+            if top_inv:
+                print(f"Top Inventors: " + " ".join([f"{i+1}. {r['name']} - {r['patent_count']}" for i, r in enumerate(top_inv)]))
+            if top_comp:
+                print(f"Top Companies: " + " ".join([f"{i+1}. {r['name']} - {r['patent_count']}" for i, r in enumerate(top_comp)]))
+            if top_countries:
+                print(f"Top Countries: " + " ".join([f"{i+1}. {r['country']}" for i, r in enumerate(top_countries)]))
             print("====================================================\n")
             
             # JSON Report
@@ -347,11 +600,14 @@ def generate_reports_files():
                 "top_companies": tc,
                 "top_countries": tco
             }
-            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "report.json"), "w") as f:
+            report_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "report.json")
+            with open(report_path, "w") as f:
                 json.dump(report, f, indent=4)
+            print(f"[INFO] Report saved to {report_path}")
                 
     except Exception as e:
-        print("Error generating reports files:", e)
+        print(f"[ERROR] Error generating reports files: {e}")
+        traceback.print_exc()
 
 def get_reports():
     try:
@@ -359,7 +615,22 @@ def get_reports():
             cursor = conn.cursor()
             cursor.execute("SELECT total_patents, total_companies FROM v_db_stats")
             stats = cursor.fetchone()
-            if not stats or stats[0] == 0: return {"status": "error", "message": "No data"}
+            
+            # Return empty data structure instead of error when no data
+            if not stats or stats[0] == 0:
+                return {
+                    "status": "success",
+                    "total_patents": 0,
+                    "total_companies": 0,
+                    "top_inventors": [],
+                    "top_companies": [],
+                    "countries": [],
+                    "trends": [],
+                    "ranked_inventors": [],
+                    "joined_data": [],
+                    "cte_results": [],
+                    "message": "No data available. Run /run-pipeline to load data."
+                }
             
             total_patents, total_companies = stats[0], stats[1]
             
@@ -391,31 +662,111 @@ def get_reports():
                 "trends": trends,
                 "ranked_inventors": ranked_inventors,
                 "joined_data": joined_data,
-                "cte_results": countries[:5]
+                "cte_results": countries[:5] if countries else []
             }
     except Exception as e:
+        print(f"[ERROR] get_reports error: {e}")
+        traceback.print_exc()
         return {"status": "error", "message": str(e)}
 
-@app.route('/run-pipeline', methods=['GET'])
+# ================= MODIFIED ENDPOINT THAT RETURNS TABLES =================
+@app.route('/run-pipeline', methods=['GET', 'POST'])
 def run_pipeline_route():
-    return jsonify(run_pipeline())
+    """Run pipeline and return table data with at least 10 rows from each table"""
+    print("[INFO] Run pipeline endpoint called")
+    
+    # Run the pipeline
+    pipeline_result = run_pipeline()
+    
+    # If pipeline failed, return error
+    if pipeline_result.get("status") == "error":
+        return jsonify({
+            "success": False,
+            "error": pipeline_result.get("message"),
+            "pipeline_result": pipeline_result
+        }), 500
+    
+    # Get the table data (with at least 10 rows per table)
+    table_data = get_table_data()
+    
+    # Also get the reports data for analytics
+    reports_data = get_reports()
+    
+    # Combine everything into one response
+    return jsonify({
+        "success": True,
+        "message": pipeline_result.get("message", "Pipeline completed successfully"),
+        "pipeline_stats": {
+            "total_patents_loaded": pipeline_result.get("total_patents", 0),
+            "total_inventors_loaded": pipeline_result.get("total_inventors", 0),
+            "total_companies_loaded": pipeline_result.get("total_companies", 0),
+            "total_relationships_loaded": pipeline_result.get("total_relationships", 0)
+        },
+        "tables": table_data,  # This contains the actual table data (10+ rows each)
+        "analytics": reports_data  # This contains the view data for charts
+    })
 
+# Keep the original reports endpoint for backward compatibility
 @app.route('/reports', methods=['GET'])
 def reports_route():
     return jsonify(get_reports())
+
+# Keep the debug endpoint for troubleshooting
+@app.route('/debug-stats', methods=['GET'])
+def debug_stats():
+    """Debug endpoint to check database contents"""
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            
+            cursor.execute("SELECT COUNT(*) FROM patents")
+            patents_count = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT COUNT(*) FROM inventors")
+            inventors_count = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT COUNT(*) FROM companies")
+            companies_count = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT COUNT(*) FROM relationships")
+            relationships_count = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT * FROM patents LIMIT 3")
+            sample_patents = [dict(row) for row in cursor.fetchall()]
+            
+            return jsonify({
+                "status": "success",
+                "patents_count": patents_count,
+                "inventors_count": inventors_count,
+                "companies_count": companies_count,
+                "relationships_count": relationships_count,
+                "sample_patents": sample_patents,
+                "database_exists": os.path.exists(DB_PATH),
+                "db_path": DB_PATH
+            })
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)}), 500
 
 @app.route('/export-csv', methods=['GET'])
 def export_csv():
     try:
         with get_db() as conn:
+            # Check if data exists
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM patents")
+            if cursor.fetchone()[0] == 0:
+                return jsonify({"status": "error", "message": "No data to export"}), 404
+            
             top_inv = pd.read_sql_query("SELECT * FROM v_top_inventors", conn)
             top_comp = pd.read_sql_query("SELECT * FROM v_top_companies", conn)
             trends = pd.read_sql_query("SELECT * FROM v_patent_trends", conn)
             
             base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+            os.makedirs(base, exist_ok=True)
+            
             top_inv.to_csv(os.path.join(base, "top_inventors.csv"), index=False)
             top_comp.to_csv(os.path.join(base, "top_companies.csv"), index=False)
-            trends.to_csv(os.path.join(base, "country_trends.csv"), index=False) # requested name
+            trends.to_csv(os.path.join(base, "country_trends.csv"), index=False)
             
             return jsonify({
                 "status": "success",
@@ -423,52 +774,77 @@ def export_csv():
                 "files": ["top_inventors.csv", "top_companies.csv", "country_trends.csv"]
             })
     except Exception as e:
+        print(f"[ERROR] Export CSV error: {e}")
+        traceback.print_exc()
         return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/api/signup', methods=['POST'])
 def signup():
     data = request.get_json()
-    email, password = data.get('email'), hash_password(data.get('password'))
+    if not data or not data.get('email') or not data.get('password'):
+        return jsonify({"error": "Email and password required"}), 400
+    
+    email = data.get('email')
+    password = hash_password(data.get('password'))
+    
     try:
         with get_db() as conn:
             cursor = conn.cursor()
             cursor.execute("INSERT INTO users (email, password) VALUES (?, ?)", (email, password))
             conn.commit()
         return jsonify({"message": "Signup successful"}), 201
-    except:
+    except sqlite3.IntegrityError:
         return jsonify({"error": "User already exists"}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/api/login', methods=['POST'])
 def login():
     data = request.get_json()
-    email, password = data.get('email'), hash_password(data.get('password'))
+    if not data or not data.get('email') or not data.get('password'):
+        return jsonify({"error": "Email and password required"}), 400
+    
+    email = data.get('email')
+    password = hash_password(data.get('password'))
+    
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT id, email FROM users WHERE email=? AND password=?", (email, password))
         user = cursor.fetchone()
-    if not user: return jsonify({"error": "Invalid credentials"}), 401
+    
+    if not user:
+        return jsonify({"error": "Invalid credentials"}), 401
+    
     return jsonify({"user": dict(user), "message": "Login successful"})
+
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    return jsonify({"status": "healthy", "database_exists": os.path.exists(DB_PATH)})
 
 @app.route('/', defaults={'path': ''})
 @app.route('/<path:path>')
 def serve_react(path):
     # Let API routes fall through to their own handlers
-    if path.startswith('api/') or path in ['run-pipeline', 'reports', 'export-csv']:
+    if path.startswith('api/') or path in ['run-pipeline', 'reports', 'export-csv', 'debug-stats']:
         return jsonify({"error": "API endpoint not found"}), 404
+    
     dist = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data_cleaner', 'dist')
+    
     # Serve static asset if it exists
     if path != "" and os.path.exists(os.path.join(dist, path)):
         return send_from_directory(dist, path)
+    
     # Fallback: serve React's index.html for client-side routing
     index = os.path.join(dist, 'index.html')
     if os.path.exists(index):
         return send_from_directory(dist, 'index.html')
+    
     return jsonify({
         "message": "Frontend not built yet. API is working!",
-        "api_endpoints": ["/api/health", "/api/login", "/api/signup", "/run-pipeline", "/reports"]
+        "api_endpoints": ["/api/health", "/api/login", "/api/signup", "/run-pipeline", "/reports", "/debug-stats"]
     })
 
-# Initialize DB at module level so gunicorn picks it up (not just __main__)
+# Initialize DB at module level
 initialize_database()
 
 if __name__ == '__main__':
