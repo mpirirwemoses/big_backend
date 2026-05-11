@@ -114,6 +114,17 @@ def initialize_database():
                 )
             """)
             
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS locations (
+                    location_id TEXT PRIMARY KEY,
+                    city TEXT,
+                    state TEXT,
+                    country TEXT,
+                    latitude REAL,
+                    longitude REAL
+                )
+            """)
+            
             cursor.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_relationships_unique ON relationships (patent_id, inventor_id, company_id)"
             )
@@ -234,25 +245,34 @@ def run_pipeline():
         INVENTOR_FILE = os.path.join(BASE_DIR, "g_inventor_disambiguated.tsv")
         REL_FILE = os.path.join(BASE_DIR, "g_persistent_inventor.tsv")
         ASSIGNEE_FILE = os.path.join(BASE_DIR, "g_assignee_disambiguated.tsv")
+        LOCATION_FILE = os.path.join(BASE_DIR, "g_location_disambiguated.tsv")
         
         print(f"[DEBUG] PATENT_FILE exists: {os.path.exists(PATENT_FILE)}")
         print(f"[DEBUG] ABSTRACT_FILE exists: {os.path.exists(ABSTRACT_FILE)}")
         print(f"[DEBUG] INVENTOR_FILE exists: {os.path.exists(INVENTOR_FILE)}")
         print(f"[DEBUG] REL_FILE exists: {os.path.exists(REL_FILE)}")
         print(f"[DEBUG] ASSIGNEE_FILE exists: {os.path.exists(ASSIGNEE_FILE)}")
+        print(f"[DEBUG] LOCATION_FILE exists: {os.path.exists(LOCATION_FILE)}")
         
-        # Check if any files exist
-        if not any([os.path.exists(PATENT_FILE), os.path.exists(INVENTOR_FILE), os.path.exists(ASSIGNEE_FILE)]):
-            print("[WARNING] No data files found. Loading sample data for testing.")
-            load_sample_data()
-            return {
-                "status": "success", 
-                "message": "Sample data loaded (no TSV files found)",
-                "total_patents": 3,
-                "total_inventors": 3,
-                "total_companies": 3,
-                "total_relationships": 3
-            }
+        missing_files = []
+        for path, name in [
+            (PATENT_FILE, 'g_patent.tsv'),
+            (ABSTRACT_FILE, 'g_patent_abstract.tsv'),
+            (INVENTOR_FILE, 'g_inventor_disambiguated.tsv'),
+            (REL_FILE, 'g_persistent_inventor.tsv'),
+            (ASSIGNEE_FILE, 'g_assignee_disambiguated.tsv'),
+            (LOCATION_FILE, 'g_location_disambiguated.tsv'),
+        ]:
+            if not os.path.exists(path):
+                missing_files.append(name)
+
+        if missing_files:
+            message = (
+                "Missing TSV files: " + ", ".join(missing_files) + 
+                ". Place the required files in backend/ and rerun /run-pipeline."
+            )
+            print(f"[ERROR] {message}")
+            return {"status": "error", "message": message}
         
         batch_size = 1000
         
@@ -414,96 +434,50 @@ def run_pipeline():
                 except Exception as e:
                     print(f"[ERROR] Processing company relationships: {e}")
                     traceback.print_exc()
+
+            # 6. Locations
+            total_locations = 0
+            if os.path.exists(LOCATION_FILE):
+                print("[INFO] Loading locations...")
+                try:
+                    for chunk in pd.read_csv(LOCATION_FILE, sep="\t", chunksize=batch_size):
+                        chunk = chunk[["location_id", "disambig_city", "disambig_state", "disambig_country", "latitude", "longitude"]].copy()
+                        chunk.rename(columns={
+                            "disambig_city": "city",
+                            "disambig_state": "state",
+                            "disambig_country": "country"
+                        }, inplace=True)
+                        chunk = chunk.dropna(subset=["location_id"])
+                        
+                        loc_data = prepare_batch_data(chunk, ["location_id", "city", "state", "country", "latitude", "longitude"])
+                        if loc_data:
+                            cursor.executemany("INSERT OR REPLACE INTO locations VALUES (?, ?, ?, ?, ?, ?)", loc_data)
+                            total_locations += len(loc_data)
+                    conn.commit()
+                    print(f"[INFO] Loaded {total_locations} locations")
+                except Exception as e:
+                    print(f"[ERROR] Processing locations: {e}")
+                    traceback.print_exc()
             
-        print(f"[SUCCESS] PIPELINE SUCCESS - Patents: {total_patents}, Inventors: {total_inventors}, Companies: {total_companies}, Relationships: {total_relationships}")
+        print(f"[SUCCESS] PIPELINE SUCCESS - Patents: {total_patents}, Inventors: {total_inventors}, Companies: {total_companies}, Relationships: {total_relationships}, Locations: {total_locations}")
         
         # Generate Console Report and JSON Report
         generate_reports_files()
         
         return {
             "status": "success",
-            "message": f"Pipeline completed! Loaded {total_patents} patents, {total_inventors} inventors, {total_companies} companies",
+            "message": f"Pipeline completed! Loaded {total_patents} patents, {total_inventors} inventors, {total_companies} companies, {total_locations} locations",
             "total_patents": total_patents,
             "total_inventors": total_inventors,
             "total_companies": total_companies,
-            "total_relationships": total_relationships
+            "total_relationships": total_relationships,
+            "total_locations": total_locations
         }
     except Exception as e:
         print(f"[ERROR] Pipeline failed: {e}")
         traceback.print_exc()
         return {"status": "error", "message": str(e)}
 
-def load_sample_data():
-    """Load sample data for testing when TSV files are not available"""
-    print("[INFO] Loading sample data...")
-    try:
-        with get_db() as conn:
-            cursor = conn.cursor()
-            
-            # Sample patents
-            sample_patents = [
-                ("PAT001", "Quantum Computing Patent", "A novel quantum computing approach", "2020-01-15", 2020),
-                ("PAT002", "AI Healthcare System", "Machine learning for medical diagnosis", "2021-03-20", 2021),
-                ("PAT003", "Blockchain Security", "Decentralized security protocol", "2022-05-10", 2022),
-                ("PAT004", "5G Network Optimization", "Advanced cellular network routing", "2021-08-15", 2021),
-                ("PAT005", "Electric Vehicle Battery", "Fast-charging lithium-ion technology", "2022-01-20", 2022),
-                ("PAT006", "Machine Learning Algorithm", "Neural network optimization", "2020-11-30", 2020),
-                ("PAT007", "Solar Panel Efficiency", "Photovoltaic cell improvements", "2021-06-10", 2021),
-                ("PAT008", "Robotic Surgery System", "Precision medical robotics", "2022-09-05", 2022),
-                ("PAT009", "Facial Recognition", "Biometric security system", "2020-04-25", 2020),
-                ("PAT010", "Cloud Computing Platform", "Distributed computing architecture", "2021-12-12", 2021),
-            ]
-            cursor.executemany("INSERT OR REPLACE INTO patents VALUES (?, ?, ?, ?, ?)", sample_patents)
-            
-            # Sample inventors
-            sample_inventors = [
-                ("INV001", "John Smith", "USA"),
-                ("INV002", "Maria Garcia", "Spain"),
-                ("INV003", "Kenji Tanaka", "Japan"),
-                ("INV004", "Sarah Johnson", "USA"),
-                ("INV005", "Luis Rodriguez", "Mexico"),
-                ("INV006", "Wei Chen", "China"),
-                ("INV007", "Emma Brown", "UK"),
-                ("INV008", "Hans Mueller", "Germany"),
-                ("INV009", "Sophie Dubois", "France"),
-                ("INV010", "Marco Rossi", "Italy"),
-            ]
-            cursor.executemany("INSERT OR REPLACE INTO inventors VALUES (?, ?, ?)", sample_inventors)
-            
-            # Sample companies
-            sample_companies = [
-                ("COM001", "Tech Corp"),
-                ("COM002", "Health Innovations"),
-                ("COM003", "SecureChain Ltd"),
-                ("COM004", "Green Energy Solutions"),
-                ("COM005", "AI Research Institute"),
-                ("COM006", "Robotics International"),
-                ("COM007", "Cloud Systems Inc"),
-                ("COM008", "Biotech Laboratories"),
-                ("COM009", "Telecom Global"),
-                ("COM010", "Automotive Tech"),
-            ]
-            cursor.executemany("INSERT OR REPLACE INTO companies VALUES (?, ?)", sample_companies)
-            
-            # Sample relationships
-            sample_relationships = [
-                ("PAT001", "INV001", "COM001"),
-                ("PAT002", "INV002", "COM002"),
-                ("PAT003", "INV003", "COM003"),
-                ("PAT004", "INV004", "COM009"),
-                ("PAT005", "INV005", "COM004"),
-                ("PAT006", "INV006", "COM005"),
-                ("PAT007", "INV007", "COM004"),
-                ("PAT008", "INV008", "COM006"),
-                ("PAT009", "INV009", "COM007"),
-                ("PAT010", "INV010", "COM010"),
-            ]
-            cursor.executemany("INSERT OR IGNORE INTO relationships VALUES (?, ?, ?)", sample_relationships)
-            
-            conn.commit()
-            print("[INFO] Sample data loaded successfully (10+ rows per table)")
-    except Exception as e:
-        print(f"[ERROR] Loading sample data: {e}")
 
 def get_table_data():
     """Get table data with at least 10 rows from each table"""
@@ -524,7 +498,7 @@ def get_table_data():
             cursor.execute("SELECT COUNT(*) FROM relationships")
             total_relationships = cursor.fetchone()[0]
             
-            # Get sample rows (at least 10 from each table)
+            # Get preview rows (at least 10 from each table)
             cursor.execute("SELECT * FROM patents LIMIT 10")
             patents = [dict(row) for row in cursor.fetchall()]
             
@@ -537,20 +511,23 @@ def get_table_data():
             cursor.execute("SELECT * FROM relationships LIMIT 10")
             relationships = [dict(row) for row in cursor.fetchall()]
             
+            cursor.execute("SELECT * FROM locations LIMIT 10")
+            locations = [dict(row) for row in cursor.fetchall()]
+            
             return {
                 "status": "success",
                 "total_counts": {
                     "patents": total_patents,
                     "inventors": total_inventors,
                     "companies": total_companies,
-                    "relationships": total_relationships
+                    "relationships": total_relationships,
+                    "locations": total_locations if 'total_locations' in locals() else 0
                 },
-                "sample_data": {
-                    "patents": patents,
-                    "inventors": inventors,
-                    "companies": companies,
-                    "relationships": relationships
-                }
+                "patents": patents,
+                "inventors": inventors,
+                "companies": companies,
+                "relationships": relationships,
+                "locations": locations
             }
     except Exception as e:
         print(f"[ERROR] Getting table data: {e}")
@@ -697,16 +674,17 @@ def run_pipeline_route():
     
     # Combine everything into one response
     return jsonify({
-        "success": True,
+        "status": "success",
         "message": pipeline_result.get("message", "Pipeline completed successfully"),
         "pipeline_stats": {
             "total_patents_loaded": pipeline_result.get("total_patents", 0),
             "total_inventors_loaded": pipeline_result.get("total_inventors", 0),
             "total_companies_loaded": pipeline_result.get("total_companies", 0),
-            "total_relationships_loaded": pipeline_result.get("total_relationships", 0)
+            "total_relationships_loaded": pipeline_result.get("total_relationships", 0),
+            "total_locations_loaded": pipeline_result.get("total_locations", 0)
         },
-        "tables": table_data,  # This contains the actual table data (10+ rows each)
-        "analytics": reports_data  # This contains the view data for charts
+        "tables": table_data,
+        "analytics": reports_data
     })
 
 # Keep the original reports endpoint for backward compatibility
