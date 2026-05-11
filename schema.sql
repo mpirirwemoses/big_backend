@@ -42,3 +42,4 @@ CREATE INDEX IF NOT EXISTS idx_inventors_country ON inventors(country);
 CREATE INDEX IF NOT EXISTS idx_relationships_patent ON relationships(patent_id);
 CREATE INDEX IF NOT EXISTS idx_relationships_inventor ON relationships(inventor_id);
 CREATE INDEX IF NOT EXISTS idx_relationships_company ON relationships(company_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_relationships_unique ON relationships(patent_id, inventor_id, company_id);

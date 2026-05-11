@@ -68,6 +68,9 @@ def initialize_database():
             with open(schema_path, "r") as f:
                 schema_script = f.read()
             cursor.executescript(schema_script)
+            cursor.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_relationships_unique ON relationships (patent_id, inventor_id, company_id)"
+            )
 
             cursor.executescript("""
                 DROP VIEW IF EXISTS v_top_inventors;
@@ -186,13 +189,8 @@ def run_pipeline():
         
         with get_db() as conn:
             cursor = conn.cursor()
-            cursor.execute("PRAGMA foreign_keys=OFF")
-            cursor.execute("DELETE FROM relationships")
-            cursor.execute("DELETE FROM companies")
-            cursor.execute("DELETE FROM inventors")
-            cursor.execute("DELETE FROM patents")
-            cursor.execute("PRAGMA foreign_keys=ON")
-            conn.commit()
+            # Keep existing data intact and load new/updated rows without deleting.
+            # This avoids clearing the database when the pipeline runs on login or refresh.
             
             # 1. Patents
             total_patents = 0
@@ -277,8 +275,8 @@ def run_pipeline():
                     for chunk in pd.read_csv(REL_FILE, sep="\t", chunksize=batch_size, nrows=50000):
                         rel = chunk[["patent_id", inventor_col]].dropna()
                         rel_data = [(r[0], r[1], None) for r in rel.itertuples(index=False, name=None)]
-                        cursor.executemany("INSERT INTO relationships (patent_id, inventor_id, company_id) VALUES (?, ?, ?)", rel_data)
-                        total_relationships += len(rel_data)
+                        cursor.executemany("INSERT OR IGNORE INTO relationships (patent_id, inventor_id, company_id) VALUES (?, ?, ?)", rel_data)
+                    total_relationships += len(rel_data)
                     conn.commit()
             
             # 5. Relationships (Companies)
@@ -287,7 +285,7 @@ def run_pipeline():
                     if "patent_id" in chunk.columns and "assignee_id" in chunk.columns:
                         rel = chunk[["patent_id", "assignee_id"]].dropna()
                         rel_data = [(r[0], None, r[1]) for r in rel.itertuples(index=False, name=None)]
-                        cursor.executemany("INSERT INTO relationships (patent_id, inventor_id, company_id) VALUES (?, ?, ?)", rel_data)
+                        cursor.executemany("INSERT OR IGNORE INTO relationships (patent_id, inventor_id, company_id) VALUES (?, ?, ?)", rel_data)
                         total_relationships += len(rel_data)
                 conn.commit()
             
