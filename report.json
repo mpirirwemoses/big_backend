@@ -1,6 +1,47 @@
 {
     "total_patents": 50000,
-    "top_inventors": [],
+    "top_inventors": [
+        {
+            "name": "Shunpei Yamazaki",
+            "patents": 12
+        },
+        {
+            "name": "Kia Silverbrook",
+            "patents": 10
+        },
+        {
+            "name": "Tao Luo",
+            "patents": 9
+        },
+        {
+            "name": "Jing Sun",
+            "patents": 8
+        },
+        {
+            "name": "Duncan Robert Kerr",
+            "patents": 7
+        },
+        {
+            "name": "Peter Russell-Clarke",
+            "patents": 7
+        },
+        {
+            "name": "Roderick A. Hyde",
+            "patents": 7
+        },
+        {
+            "name": "Bartley K. Andre",
+            "patents": 6
+        },
+        {
+            "name": "Daniel J. Coster",
+            "patents": 6
+        },
+        {
+            "name": "Gurtej S. Sandhu",
+            "patents": 6
+        }
+    ],
     "top_companies": [
         {
             "name": "SAMSUNG DISPLAY CO., LTD.",
