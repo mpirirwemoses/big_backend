@@ -3,7 +3,7 @@ services:
     name: big-backend
     env: python
     buildCommand: "npm install --prefix data_cleaner && npm run build --prefix data_cleaner && pip install -r backend/requirements.txt"
-    startCommand: cd backend && gunicorn app:app
+    startCommand: cd backend && gunicorn -w 1 --threads 1 app:app
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
