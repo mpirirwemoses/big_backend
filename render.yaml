@@ -8,4 +8,4 @@ services:
       - key: PYTHON_VERSION
         value: 3.11.0
       - key: DATABASE_PATH
-        value: patent_database.db
+        value: /data/patent_database.db

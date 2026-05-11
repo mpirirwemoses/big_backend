@@ -31,7 +31,16 @@ CORS(
 )
 
 # ================= SQLITE DATABASE CONFIGURATION =================
-DB_PATH = os.environ.get('DATABASE_PATH', 'patent_database.db')
+DEFAULT_DB_NAME = 'patent_database.db'
+requested_db_path = os.environ.get('DATABASE_PATH', DEFAULT_DB_NAME)
+if os.path.isabs(requested_db_path):
+    DB_PATH = requested_db_path
+else:
+    DB_PATH = os.path.abspath(os.path.join(_BASE, '..', requested_db_path))
+
+os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+print(f"[INFO] DATABASE_PATH={DB_PATH}")
+print(f"[INFO] DATABASE_EXISTS={os.path.exists(DB_PATH)}")
 
 @contextmanager
 def get_db():
