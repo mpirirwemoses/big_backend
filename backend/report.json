@@ -1,0 +1,64 @@
+{
+    "top_inventors": [
+        [
+            "James Mwangi",
+            1
+        ],
+        [
+            "Grace Nakato",
+            1
+        ],
+        [
+            "Samuel Okoye",
+            1
+        ],
+        [
+            "Amina Hassan",
+            1
+        ],
+        [
+            "David Kimani",
+            1
+        ]
+    ],
+    "countries": [
+        [
+            "Kenya",
+            2
+        ],
+        [
+            "Uganda",
+            1
+        ],
+        [
+            "Nigeria",
+            1
+        ],
+        [
+            "Tanzania",
+            1
+        ]
+    ],
+    "trends": [
+        [
+            2019,
+            1
+        ],
+        [
+            2020,
+            1
+        ],
+        [
+            2021,
+            1
+        ],
+        [
+            2022,
+            1
+        ],
+        [
+            2023,
+            1
+        ]
+    ]
+}

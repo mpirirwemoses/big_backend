@@ -1,0 +1,47 @@
+{
+    "total_patents": 50000,
+    "top_inventors": [],
+    "top_companies": [
+        {
+            "name": "SAMSUNG DISPLAY CO., LTD.",
+            "patents": 1060
+        },
+        {
+            "name": "International Business Machines Corporation",
+            "patents": 897
+        },
+        {
+            "name": "CANON KABUSHIKI KAISHA",
+            "patents": 550
+        },
+        {
+            "name": "SONY GROUP CORPORATION",
+            "patents": 364
+        },
+        {
+            "name": "Fujitsu Limited",
+            "patents": 326
+        },
+        {
+            "name": "HITACHI, LTD.",
+            "patents": 294
+        },
+        {
+            "name": "MITSUBISHI ELECTRIC CORPORATION",
+            "patents": 287
+        },
+        {
+            "name": "Intel Corporation",
+            "patents": 286
+        },
+        {
+            "name": "Kabushiki Kaisha Toshiba",
+            "patents": 283
+        },
+        {
+            "name": "TOYOTA JIDOSHA KABUSHIKI KAISHA",
+            "patents": 259
+        }
+    ],
+    "top_countries": []
+}

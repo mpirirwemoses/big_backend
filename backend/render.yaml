@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: big-backend
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.10.0
+      - key: FRONTEND_URL
+        value: "http://localhost:3000" # Change this in Render dashboard to your actual frontend URL
+      - key: DATABASE_PATH
+        value: patent_database.db
