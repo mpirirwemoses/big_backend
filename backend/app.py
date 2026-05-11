@@ -10,6 +10,8 @@ from flask import Flask, jsonify, request, send_from_directory, make_response
 from flask_cors import CORS
 import pandas as pd
 import numpy as np
+import glob
+import zlib
 
 # Resolve the dist folder relative to this file so it works on Render and locally
 _BASE = os.path.dirname(os.path.abspath(__file__))
@@ -233,6 +235,32 @@ def prepare_batch_data(df, columns=None):
             data.append(cleaned_row)
     return data
 
+def reassemble_file(base_name):
+    """Reassemble a TSV file from its .gz.part chunks"""
+    try:
+        parts = sorted(glob.glob(f"{base_name}.gz.part*"))
+        if not parts:
+            return False
+            
+        print(f"[INFO] Reassembling {base_name} from {len(parts)} parts...")
+        decompressor = zlib.decompressobj(wbits=31) # 31 = gzip format
+        
+        with open(base_name, 'wb') as f_out:
+            for part in parts:
+                with open(part, 'rb') as f_in:
+                    while True:
+                        chunk = f_in.read(1024 * 1024 * 10) # 10MB chunks
+                        if not chunk:
+                            break
+                        f_out.write(decompressor.decompress(chunk))
+            f_out.write(decompressor.flush())
+            
+        print(f"[SUCCESS] Reassembled {base_name}")
+        return True
+    except Exception as e:
+        print(f"[ERROR] Reassembling {base_name}: {e}")
+        return False
+
 def run_pipeline():
     try:
         print("\n[INFO] PIPELINE STARTED\n")
@@ -264,11 +292,13 @@ def run_pipeline():
             (LOCATION_FILE, 'g_location_disambiguated.tsv'),
         ]:
             if not os.path.exists(path):
-                missing_files.append(name)
+                # Try to reassemble from parts
+                if not reassemble_file(path):
+                    missing_files.append(name)
 
         if missing_files:
             message = (
-                "Missing TSV files: " + ", ".join(missing_files) + 
+                "Missing TSV files and no reassembly parts found: " + ", ".join(missing_files) + 
                 ". Place the required files in backend/ and rerun /run-pipeline."
             )
             print(f"[ERROR] {message}")
