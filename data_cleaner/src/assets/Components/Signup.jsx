@@ -20,8 +20,8 @@ function Auth({ setUser }) {
     setError("");
 
     const url = isLogin
-      ? "http://127.0.0.1:5000/api/login"
-      : "http://127.0.0.1:5000/api/signup";
+      ? "/api/login"
+      : "/api/signup";
 
     try {
       const res = await fetch(url, {

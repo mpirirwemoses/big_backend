@@ -15,7 +15,7 @@ function Home({ user, setUser }) {
     setSampleData(null);
 
     try {
-      const res = await fetch("http://127.0.0.1:5000/run-pipeline");
+      const res = await fetch("/run-pipeline");
       const data = await res.json();
 
       if (data.status === "success") {
@@ -39,7 +39,7 @@ function Home({ user, setUser }) {
     setSampleData(null);
 
     try {
-      const res = await fetch("http://127.0.0.1:5000/reports");
+      const res = await fetch("/reports");
       const data = await res.json();
 
       if (data.status === "success") {
@@ -60,7 +60,7 @@ function Home({ user, setUser }) {
   const exportCSV = async () => {
     setLoading(true);
     try {
-      const res = await fetch("http://127.0.0.1:5000/export-csv");
+      const res = await fetch("/export-csv");
       const data = await res.json();
       
       if (data.status === "success") {
