@@ -498,6 +498,9 @@ def get_table_data():
             cursor.execute("SELECT COUNT(*) FROM relationships")
             total_relationships = cursor.fetchone()[0]
             
+            cursor.execute("SELECT COUNT(*) FROM locations")
+            total_locations = cursor.fetchone()[0]
+            
             # Get preview rows (at least 10 from each table)
             cursor.execute("SELECT * FROM patents LIMIT 10")
             patents = [dict(row) for row in cursor.fetchall()]
@@ -521,7 +524,7 @@ def get_table_data():
                     "inventors": total_inventors,
                     "companies": total_companies,
                     "relationships": total_relationships,
-                    "locations": total_locations if 'total_locations' in locals() else 0
+                    "locations": total_locations
                 },
                 "patents": patents,
                 "inventors": inventors,
@@ -658,13 +661,13 @@ def run_pipeline_route():
     # Run the pipeline
     pipeline_result = run_pipeline()
     
-    # If pipeline failed, return error
+    # If pipeline failed, return error (400 since it's usually missing files/config)
     if pipeline_result.get("status") == "error":
         return jsonify({
-            "success": False,
-            "error": pipeline_result.get("message"),
+            "status": "error",
+            "message": pipeline_result.get("message"),
             "pipeline_result": pipeline_result
-        }), 500
+        }), 400
     
     # Get the table data (with at least 10 rows per table)
     table_data = get_table_data()
