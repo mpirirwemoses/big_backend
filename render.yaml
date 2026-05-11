@@ -2,12 +2,7 @@ services:
   - type: web
     name: big-backend
     env: python
-    buildCommand: >-
-      cd data_cleaner &&
-      npm install &&
-      npm run build &&
-      cd ../backend &&
-      pip install -r requirements.txt
+    buildCommand: "npm install --prefix data_cleaner && npm run build --prefix data_cleaner && pip install -r backend/requirements.txt"
     startCommand: cd backend && gunicorn app:app
     envVars:
       - key: PYTHON_VERSION
