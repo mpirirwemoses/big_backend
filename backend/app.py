@@ -349,7 +349,7 @@ def run_pipeline():
                     print(f"[INFO] Loaded {total_patents} patents")
                     
                     if clean_patents_all:
-                        pd.concat(clean_patents_all).to_csv(os.path.join(BASE_DIR, "..", "clean_patents.csv"), index=False)
+                        pd.concat(clean_patents_all).to_csv(os.path.join(BASE_DIR, "exports", "clean_patents.csv"), index=False)
                 except Exception as e:
                     print(f"[ERROR] Processing patents: {e}")
                     traceback.print_exc()
@@ -375,7 +375,7 @@ def run_pipeline():
                     print(f"[INFO] Loaded {total_inventors} inventors")
                     
                     if clean_inventors_all:
-                        pd.concat(clean_inventors_all).to_csv(os.path.join(BASE_DIR, "..", "clean_inventors.csv"), index=False)
+                        pd.concat(clean_inventors_all).to_csv(os.path.join(BASE_DIR, "exports", "clean_inventors.csv"), index=False)
                 except Exception as e:
                     print(f"[ERROR] Processing inventors: {e}")
                     traceback.print_exc()
@@ -417,7 +417,7 @@ def run_pipeline():
                     print(f"[INFO] Loaded {total_companies} companies")
                     
                     if clean_companies_all:
-                        pd.concat(clean_companies_all).to_csv(os.path.join(BASE_DIR, "..", "clean_companies.csv"), index=False)
+                        pd.concat(clean_companies_all).to_csv(os.path.join(BASE_DIR, "exports", "clean_companies.csv"), index=False)
                 except Exception as e:
                     print(f"[ERROR] Processing companies: {e}")
                     traceback.print_exc()

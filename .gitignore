@@ -1,8 +1,7 @@
 # Data files
 *.tsv
 *.csv
-*.tsv.gz.*
-*.part*
+!*.gz.part*
 
 # Databases
 *.db
