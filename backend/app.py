@@ -10,7 +10,10 @@ from flask import Flask, jsonify, request, send_from_directory, make_response
 from flask_cors import CORS
 import pandas as pd
 
-app = Flask(__name__, static_folder='../data_cleaner/dist', static_url_path='')
+# Resolve the dist folder relative to this file so it works on Render and locally
+_BASE = os.path.dirname(os.path.abspath(__file__))
+_DIST = os.path.join(_BASE, '..', 'data_cleaner', 'dist')
+app = Flask(__name__, static_folder=_DIST, static_url_path='')
 
 # ================= PRODUCTION CORS CONFIGURATION =================
 FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:5173')
@@ -416,13 +419,24 @@ def login():
 @app.route('/', defaults={'path': ''})
 @app.route('/<path:path>')
 def serve_react(path):
+    # Let API routes fall through to their own handlers
     if path.startswith('api/') or path in ['run-pipeline', 'reports', 'export-csv']:
         return jsonify({"error": "API endpoint not found"}), 404
-    static_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data_cleaner', 'dist')
-    if path != "" and os.path.exists(os.path.join(static_folder, path)):
-        return send_from_directory(static_folder, path)
-    return send_from_directory(static_folder, 'index.html') if os.path.exists(os.path.join(static_folder, 'index.html')) else "Frontend not built."
+    dist = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data_cleaner', 'dist')
+    # Serve static asset if it exists
+    if path != "" and os.path.exists(os.path.join(dist, path)):
+        return send_from_directory(dist, path)
+    # Fallback: serve React's index.html for client-side routing
+    index = os.path.join(dist, 'index.html')
+    if os.path.exists(index):
+        return send_from_directory(dist, 'index.html')
+    return jsonify({
+        "message": "Frontend not built yet. API is working!",
+        "api_endpoints": ["/api/health", "/api/login", "/api/signup", "/run-pipeline", "/reports"]
+    })
+
+# Initialize DB at module level so gunicorn picks it up (not just __main__)
+initialize_database()
 
 if __name__ == '__main__':
-    initialize_database()
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=True)
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
