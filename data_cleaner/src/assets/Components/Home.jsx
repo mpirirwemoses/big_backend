@@ -558,8 +558,3 @@ function Home({ user, setUser }) {
 }
 
 export default Home;
-    </div>
-  );
-}
-
-export default Home;
