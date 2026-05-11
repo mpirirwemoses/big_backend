@@ -16,14 +16,17 @@ _DIST = os.path.join(_BASE, '..', 'data_cleaner', 'dist')
 app = Flask(__name__, static_folder=_DIST, static_url_path='')
 
 # ================= PRODUCTION CORS CONFIGURATION =================
-FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:5173')
+FRONTEND_URL = os.environ.get('FRONTEND_URL') or os.environ.get('RENDER_EXTERNAL_URL')
+
+allowed_origins = [FRONTEND_URL] if FRONTEND_URL else ["*"]
+print(f"[INFO] FRONTEND_URL={FRONTEND_URL or 'not set'}")
 
 CORS(
     app,
-    resources={r"/*": {"origins": [FRONTEND_URL, "http://localhost:3000", "http://localhost:5173", "http://127.0.0.1:5173"]}},
+    resources={r"/*": {"origins": allowed_origins}},
     allow_headers=["Content-Type", "Authorization"],
     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    supports_credentials=True,
+    supports_credentials=bool(FRONTEND_URL),
     max_age=3600
 )
 
